@@ -1145,7 +1145,7 @@ tbody tr:last-child td{border-bottom:none}
   <div class="pg" id="pg-usrs">
     <div class="card"><div class="sh"><div class="st">Usuarios</div>
       <div id="usr-excel-notice" style="display:none;background:#fffbeb;border:1px solid #fde68a;border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-size:11px;color:#92400e">
-        ⚠️ <strong>Usuarios gestionados desde Excel.</strong> Los cambios realizados aquí quedan guardados en este PC. Para que sean visibles desde otros equipos, edita la hoja <strong>Usuarios_Contraseña</strong> del archivo LM-0019.xlsx directamente en la carpeta de red.
+        ⚠️ <strong>Usuarios gestionados desde Excel.</strong> Los cambios realizados aquí quedan guardados en este PC. Para que sean visibles desde otros equipos, edita la hoja <strong>Usuarios_Contraseña</strong> del archivo <span id="usr-lm-cod">LM-0019</span>.xlsx directamente en la carpeta de red.
       </div><button class="btn sm" onclick="limpiarModalUsr();openMo('mo-usr')">+ Nuevo</button></div>
       <div class="tw"><table><thead><tr><th>Nombre</th><th>Usuario (login)</th><th>Email</th><th>Rol</th><th>Empresa</th><th>Contraseña</th><th id="usr-th-pass-ver" style="display:none">Contraseña (texto)</th><th>Estado</th><th></th></tr></thead><tbody id="usr-tb"></tbody></table></div>
     </div>
@@ -1278,13 +1278,13 @@ tbody tr:last-child td{border-bottom:none}
     </div>
     <div class="card"><div class="sh"><div class="st">Exportar</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="btn" onclick="expExcel()" style="gap:6px">📥 Descargar Listado Maestro LM-0019</button>
+        <button class="btn" onclick="expExcel()" style="gap:6px">📥 Descargar Listado Maestro <span id="rep-btn-lm-cod">LM-0019</span></button>
         <button class="btn gh" onclick="expCSV()">Exportar CSV</button>
         <button class="btn gh" onclick="expBak()">Backup JSON</button>
         <button class="btn" onclick="solicitarIdiomaListadoPDF()" style="background:#006860;gap:6px">📄 Descargar Listado Maestro PDF</button>
         <button class="btn" onclick="abrirModalExcelLM()" style="background:#1e7145;gap:6px">📊 Descargar Listado Maestro Excel</button>
       </div>
-      <div style="font-size:10px;color:var(--tx3);margin-top:7px">📁 Guardar en: <span style="font-family:monospace;background:var(--tl);padding:2px 6px;border-radius:4px">\\elara\SistDoc-Intranet\Listado\PROCAPS\LM-0019.xlsx</span> — reemplaza el archivo anterior.</div>
+      <div style="font-size:10px;color:var(--tx3);margin-top:7px">📁 Guardar en: <span style="font-family:monospace;background:var(--tl);padding:2px 6px;border-radius:4px">\\elara\SistDoc-Intranet\Listado\PROCAPS\<span id="rep-lm-path-cod">LM-0019</span>.xlsx</span> — reemplaza el archivo anterior.</div>
     </div>
   </div>
 
@@ -3715,6 +3715,10 @@ function refrescarFormatosOficialesUI(){
     setTxt('nf-titulo-cod', nv.cod);
     setTxt('nf-hdr-cod', nv.cod);
     setTxt('nf-hdr-ver', nv.ver);
+    var lm=getFormatoOficial('listado');
+    setTxt('rep-btn-lm-cod', lm.cod);
+    setTxt('rep-lm-path-cod', lm.cod);
+    setTxt('usr-lm-cod', lm.cod);
   }catch(e){}
 }
 // Store logo src for module headers
@@ -5489,7 +5493,7 @@ function dcpExportarCambiosXLSX(){
   ws['!autofilter'] = {ref: XLSX.utils.encode_range({s:{r:3,c:0},e:{r:3,c:NC-1}})};
   XLSX.utils.book_append_sheet(wb, ws, 'Cambios');
 
-  var fname = 'LM-0019_Cambios_'+tabLabels[tab].replace(/[^a-zA-Z0-9]/g,'_')+'_'+fechaHoy+'.xlsx';
+  var fname = getFormatoOficial('listado').cod+'_Cambios_'+tabLabels[tab].replace(/[^a-zA-Z0-9]/g,'_')+'_'+fechaHoy+'.xlsx';
   try{
     XLSX.writeFile(wb, fname, {cellStyles:true});
     toast('✅ Excel descargado: '+fname,'ok');
@@ -7354,7 +7358,10 @@ function generarActaCopias() {
   var _fmtActa = getFormatoOficial('acta');
 
   var tipoTxt = tipo==='obs' ? 'RECOLECCIÓN DE COPIAS CONTROLADAS' : 'ENTREGA DE COPIAS CONTROLADAS';
-  var accionTxt = tipo==='obs' ? 'RECOLECTAR Y REEMPLAZAR' : 'ENTREGAR Y REEMPLAZAR';
+  // Documento que pasó a Obsoleto -> ya no se reemplaza, solo se recolecta la copia física.
+  // Documento con cambio de versión/actualización -> se recolecta la copia vencida Y se
+  // entrega/reemplaza por la copia de la nueva versión.
+  var accionTxt = tipo==='obs' ? 'RECOLECTAR' : 'RECOLECTAR Y REEMPLAZAR';
   var colorBorder = tipo==='obs' ? '#d63b3b' : '#00A99E';
   var colorBg = tipo==='obs' ? '#fde8e8' : '#e0f5f3';
 
@@ -9472,6 +9479,20 @@ function renderAudit(){
 }
 
 
+// Genera el HTML de una tarjeta de indicador pequeña, reutilizando las
+// mismas clases (kpi/kl/kv) que ya usan las tarjetas KPI del resto de la
+// app, para que se vean visualmente iguales.
+// id: id del elemento <div> del valor (útil si algo más necesita leerlo/actualizarlo después)
+// label: texto de la etiqueta
+// value: valor a mostrar
+// colorClass: '' (por defecto), 'tl' (teal), 'r' (rojo), 'g' (verde), 'a' (ámbar)
+// extra: HTML adicional opcional a insertar dentro de la tarjeta (subtítulo, etc.)
+function mkKpi(id, label, value, colorClass, extra){
+  extra = extra || '';
+  return '<div class="kpi"><div class="kl">'+label+'</div>'
+    + '<div class="kv'+(colorClass ? ' '+colorClass : '')+'" id="'+id+'">'+value+'</div>'
+    + extra + '</div>';
+}
 function renderRep(){
 
   var total=docs.length,venc=docsEmpresa().filter(function(d){return dH(d.fechaVencimiento)<0&&d.estado!=='Obsoleto';}).length;
@@ -9495,7 +9516,7 @@ function expExcel(){
   var today = new Date();
   var fechaHoy = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
   var org = cfg.org || 'SOFGEN PHARMA';
-  var fileName = 'LM-0019.xlsx';
+  var fileName = getFormatoOficial('listado').cod+'.xlsx';
   var sheetName = 'Listado Maestro';
 
   //  Columnas en orden exacto 
@@ -13451,7 +13472,7 @@ async function eccGenerarPDFActa(idx){
   if(!esVerif){
     // ══ ACTA DE ENTREGA / RECOLECCIÓN — igual que generarActaCopias() ══
     var tipoTxt = tipoObs?'RECOLECCIÓN DE COPIAS CONTROLADAS':'ENTREGA DE COPIAS CONTROLADAS';
-    var accionTxt = tipoObs?'RECOLECTAR Y REEMPLAZAR':'ENTREGAR Y REEMPLAZAR';
+    var accionTxt = tipoObs?'RECOLECTAR':'RECOLECTAR Y REEMPLAZAR';
     var lista=a.items||[];
     var verDoc = (function(){
       var d=(typeof docs!=='undefined'?docs:[]).find(function(x){return x.codigoActual===(lista[0]?lista[0].codigo:null);});
@@ -13742,7 +13763,7 @@ function eccRegenerarHtmlActa(a){
   var _fmtActa=getFormatoOficial('acta');
 
   var tipoTxt=tipo==='obs'?'RECOLECCIÓN DE COPIAS CONTROLADAS':'ENTREGA DE COPIAS CONTROLADAS';
-  var accionTxt=tipo==='obs'?'RECOLECTAR Y REEMPLAZAR':'ENTREGAR Y REEMPLAZAR';
+  var accionTxt=tipo==='obs'?'RECOLECTAR':'RECOLECTAR Y REEMPLAZAR';
   var colorBorder=tipo==='obs'?'#d63b3b':'#00A99E';
   var colorBg=tipo==='obs'?'#fde8e8':'#e0f5f3';
 
@@ -19012,7 +19033,7 @@ function odDescargarExcelFallback(buf, nombre){
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = nombre || 'LM-0019.xlsx';
+    a.download = nombre || (getFormatoOficial('listado').cod+'.xlsx');
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -22026,7 +22047,7 @@ async function _buildListadoPDF(lang){
         var blob=new Blob([pdfBytes],{type:'application/pdf'});
         var a=document.createElement('a');
         a.href=URL.createObjectURL(blob);
-        a.download='LM-0019_'+(es?'Listado_Maestro':pt?'Lista_Mestra':'Master_Document_List')+'_'+fnDate+'.pdf';
+        a.download=getFormatoOficial('listado').cod+'_'+(es?'Listado_Maestro':pt?'Lista_Mestra':'Master_Document_List')+'_'+fnDate+'.pdf';
         document.body.appendChild(a);
         a.click();
         setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(a.href); },8000);
@@ -23025,7 +23046,7 @@ function rbExportarCambiosCSV(){
   ws['!autofilter'] = {ref: XLSX.utils.encode_range({s:{r:3,c:0},e:{r:3,c:NC-1}})};
   XLSX.utils.book_append_sheet(wb, ws, 'Cambios RB');
 
-  var fname = 'LM-0019_RB_Cambios_'+tabLabels[tab].replace(/[^a-zA-Z0-9]/g,'_')+'_'+fechaHoy+'.xlsx';
+  var fname = getFormatoOficial('listado').cod+'_RB_Cambios_'+tabLabels[tab].replace(/[^a-zA-Z0-9]/g,'_')+'_'+fechaHoy+'.xlsx';
   try{
     XLSX.writeFile(wb, fname, {cellStyles:true});
     toast('✅ Excel descargado: '+fname,'ok');
@@ -25329,7 +25350,7 @@ function _generarExcelConDatos(data, selectedCols, selectedEstados, lang, tMap){
   ws['!autofilter']={ref:XLSX.utils.encode_range({s:{r:3,c:0},e:{r:3,c:NC-1}})};
   XLSX.utils.book_append_sheet(wb,ws,es?'Listado Maestro':pt?'Lista Mestra':'Master List');
 
-  var fname='LM-0019_'+(es?'Listado_Maestro':pt?'Lista_Mestra':'Master_Document_List')+'_'+fechaHoy+'.xlsx';
+  var fname=getFormatoOficial('listado').cod+'_'+(es?'Listado_Maestro':pt?'Lista_Mestra':'Master_Document_List')+'_'+fechaHoy+'.xlsx';
   try{
     XLSX.writeFile(wb,fname,{cellStyles:true});
     toast('\u2705 '+(es?'Excel generado':pt?'Excel gerado':'Excel generated')+': '+fname,'ok');
