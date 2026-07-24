@@ -2770,6 +2770,25 @@ tbody tr:last-child td{border-bottom:none}
   </div>
   <div id="d-copias-warn" style="display:none;background:#fff3cd;border:1px solid #ffd97a;border-radius:var(--r);padding:9px 12px;margin:8px 0;font-size:11px;color:#7a4e00;gap:8px;align-items:flex-start"></div>
   <div id="d-drel-warn" style="display:none"></div>
+
+  <div style="background:#f8fafc;border:1px solid var(--brd);border-radius:var(--r);padding:10px 14px;margin:10px 0">
+    <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--T);margin-bottom:8px">🏷️ Seguimiento de Cambios Aplicados</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600;color:var(--tx)">
+        <input type="checkbox" id="d-cambio-identidad" style="width:16px;height:16px;accent-color:#7c3aed;cursor:pointer">
+        <span>🏢 Cambio Identidad Corporativa</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600;color:var(--tx)">
+        <input type="checkbox" id="d-cambio-cargos" style="width:16px;height:16px;accent-color:#0284c7;cursor:pointer">
+        <span>👔 Cambio Cargos (Gerente/Director)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600;color:var(--tx)">
+        <input type="checkbox" id="d-cambio-multisoc" style="width:16px;height:16px;accent-color:#059669;cursor:pointer">
+        <span>🏬 Aplica Multi-Sociedad</span>
+      </label>
+    </div>
+  </div>
+
   <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:6px;flex-wrap:wrap">
     <button class="btn sm" style="background:#00695C;color:#fff;gap:6px" onclick="enviarCorreoDocumento()" id="btn-email-doc" title="Enviar correo de notificación sobre este documento">
       📧 Enviar correo
@@ -3167,8 +3186,19 @@ function saveDocs(arr){
     });
     lsSet('sg_d'+i,JSON.stringify(sl));
   }
-  if(window._odRecienCargado) return;
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){
+  if(window._odRecienCargado){
+    // No se descarta el guardado: se reintenta cuando termine la ventana de
+    // protección post-login (30s), para no perder ediciones reales del usuario.
+    setTimeout(function(){
+      if(window.OD && OD.fileHandle && OD.syncActivo && !window._odRecienCargado){
+        if(OD.saveTimer) clearTimeout(OD.saveTimer);
+        OD.saveTimer=setTimeout(function(){ odGuardarListado(true); },1000);
+        if(typeof odSaveBtnEstado==='function') odSaveBtnEstado('pendiente');
+      }
+    }, 31000);
+    return;
+  }
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer) clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){ odGuardarListado(true); },60000);
     if(typeof odSaveBtnEstado==='function') odSaveBtnEstado('pendiente');
@@ -3400,7 +3430,7 @@ function recalcEstados(){
       // Datos recién cargados desde Excel — no reescribir inmediatamente
       return cambios;
     }
-    if(OD&&OD.fileHandle&&OD.syncActivo){
+    if(OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
       if(OD.saveTimer) clearTimeout(OD.saveTimer);
       OD.saveTimer=setTimeout(function(){odGuardarListado(true);},15000); // 15s de gracia
       if(typeof odSaveBtnEstado==='function') odSaveBtnEstado('pendiente');
@@ -3594,7 +3624,7 @@ function logA(u,a,d,cambios,modulo){
   // Acumular en cola de pendientes para append-only al guardar
   _auditPendientes.push(registro);
   // Guardar en SharePoint con debounce
-  if(OD.fileHandle&&OD.syncActivo){
+  if(OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(window._auditSaveTimer) clearTimeout(window._auditSaveTimer);
     window._auditSaveTimer=setTimeout(function(){odGuardarListado(true);},60000);
     if(typeof odSaveBtnEstado==='function') odSaveBtnEstado('pendiente');
@@ -3766,7 +3796,11 @@ function _icSolicitudesDeCodigo(cod){
 function _icEsObsoleto(d){ return d.estado==='Obsoleto'||d.obsoleto==='X'||d.obsoleto==='Si'||d.obsoleto==='Sí'; }
 function _icEsFormato(d){ return d.tipoDocumento==='Formato'; }
 // ¿El documento ya tiene una solicitud RB oficializada marcada como Cambio Identidad Corporativa?
+// (o, desde que el check se puede marcar directamente al editar el documento en el
+// módulo Documentos, el propio documento ya tiene esa marca aunque no exista o no
+// esté oficializada ninguna solicitud de Ruta de Borrador para ese código)
 function _icTieneIdentidadNueva(d){
+  if(d.cambioIdentidad==='SI') return true;
   return _icSolicitudesDeCodigo(d.codigoActual).some(function(s){
     return _icEsOficializada(s) && s.cambioIdentidad==='SI';
   });
@@ -6163,6 +6197,9 @@ function openNewDoc() {
     var inp=document.getElementById(id); if(inp) inp.value='';
     document.querySelectorAll('#'+id+'_opts input[type=checkbox]').forEach(function(cb){cb.checked=false;});
   });
+  ['d-cambio-identidad','d-cambio-cargos','d-cambio-multisoc'].forEach(function(id){
+    var cb=document.getElementById(id); if(cb) cb.checked=false;
+  });
   document.getElementById('d-codant').value = 'No Aplica';
   document.getElementById('d-obs').value = 'No';
   document.getElementById('d-idioma').value = 'E';
@@ -6260,7 +6297,10 @@ function _saveDocOriginal() {
     correoElectronico:(document.getElementById('d-cor').value||(old?old.correoElectronico:'')||''), alcanceEmpresas:(document.getElementById('d-alc').value||''),
     mbr:document.getElementById('d-mbr').value, docGxP:document.getElementById('d-gxp').value,
     docIntercompania:(document.getElementById('d-inter').value||''), areasAplicables:document.getElementById('d-aapl').value,
-    docsRelacionados:document.getElementById('d-drel').value
+    docsRelacionados:document.getElementById('d-drel').value,
+    cambioIdentidad: (document.getElementById('d-cambio-identidad')||{}).checked ? 'SI' : '',
+    cambioCargos: (document.getElementById('d-cambio-cargos')||{}).checked ? 'SI' : '',
+    cambioMultiSociedad: (document.getElementById('d-cambio-multisoc')||{}).checked ? 'SI' : ''
   };
   if (editId) {
     var idx = idxPrevio;
@@ -6351,6 +6391,20 @@ function _saveDocOriginal() {
   // llegar nunca a guardar los cambios.
   try{ rbActualizarOficializacion(cod); }catch(eRB){ console.warn('[doc] rbActualizarOficializacion falló:',eRB); }
   saveDocs(docs); recalcLC(); closeMo('mo-doc'); renderDocs(); updBadges();
+  // Sincronizar los 3 checks de cambio (Identidad/Cargos/Multi-Sociedad) hacia
+  // las solicitudes de Ruta de Borrador con el mismo código, para que ambas
+  // vistas queden consistentes (igual que el toggle del panel de detalle).
+  try{
+    var _solActualizadas=false;
+    ['cambioIdentidad','cambioCargos','cambioMultiSociedad'].forEach(function(campo){
+      (solicitudes||[]).forEach(function(s){
+        if((s.codigo||'').toUpperCase().trim()===cod && s[campo]!==data[campo]){
+          s[campo]=data[campo]||''; _solActualizadas=true;
+        }
+      });
+    });
+    if(_solActualizadas) saveArr('sol', solicitudes);
+  }catch(eSyncSol){ console.warn('[doc] sync cambios->solicitudes falló:',eSyncSol); }
   // Enviar correo automáticamente después de guardar
   setTimeout(function(){ try{ enviarCorreoDocumento(); }catch(eMail){ console.warn('[doc] enviarCorreoDocumento falló:',eMail); } }, 300);
   // --- Alerta copias controladas (siempre, para crear y editar) ---
@@ -6421,6 +6475,9 @@ function editDoc(id) {
   document.getElementById('d-est').value = d.estado || '';
   document.getElementById('d-mbr').value = d.mbr || '';
   document.getElementById('d-gxp').value = d.docGxP || '';
+  var cbId = document.getElementById('d-cambio-identidad'); if (cbId) cbId.checked = d.cambioIdentidad==='SI';
+  var cbCa = document.getElementById('d-cambio-cargos'); if (cbCa) cbCa.checked = d.cambioCargos==='SI';
+  var cbMs = document.getElementById('d-cambio-multisoc'); if (cbMs) cbMs.checked = d.cambioMultiSociedad==='SI';
   // Poblar dropdown multi Alcance A Empresas
   (function(){
     var inp=document.getElementById('d-alc');
@@ -7421,7 +7478,7 @@ function generarActaCopias() {
   window.actasCopias.push(actaReg);
   try{localStorage.setItem('actasCopias',JSON.stringify(window.actasCopias));}catch(e){}
   // Guardar en Excel de OneDrive inmediatamente
-  if(OD.fileHandle&&OD.syncActivo){
+  if(OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer) clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
     if(typeof odSaveBtnEstado==='function') odSaveBtnEstado('pendiente');
@@ -9631,7 +9688,10 @@ function procXLS(file){
         docIntercompania:['doc intercompania','doc.intercompania','intercompania','doc.intercompanyhia'],
         areasAplicables: ['areas aplicables','areas aplicable'],
         proceso:         ['proceso','process'],
-        correoElectronico:['correo electronico','correo electronico','correo','email']
+        correoElectronico:['correo electronico','correo electronico','correo','email'],
+        cambioIdentidad: ['cambio identidad corporativa','cambio de identidad corporativa','cambio identidad'],
+        cambioCargos:    ['cambio cargos','cambio de cargos','cambio cargos gerente director'],
+        cambioMultiSociedad: ['aplica multi sociedad','aplica multi-sociedad','cambio multi sociedad','multi sociedad']
       };
 
       var colIdx={};
@@ -9751,6 +9811,14 @@ function procXLS(file){
         if(u==='X'||u==='SI'||u==='SÍ'||u==='YES'||u==='1'||u==='S'||u==='TRUE'||u==='MBR'||u==='GXP')return'X';
         return'';
       }
+      // Para los 3 checks de seguimiento de cambios (cambioIdentidad/cambioCargos/
+      // cambioMultiSociedad), que en el resto de la app usan 'SI' como valor
+      // verdadero (no 'X'). Acepta las mismas variantes de escritura del Excel.
+      function nSI(v){
+        var u=String(v||'').toUpperCase().trim();
+        if(u==='X'||u==='SI'||u==='SÍ'||u==='YES'||u==='1'||u==='S'||u==='TRUE')return'SI';
+        return'';
+      }
 
       //  Construir documentos 
       var newDocs=[];
@@ -9804,6 +9872,9 @@ function procXLS(file){
           areasAplicables:  getCellStr(row,colIdx.areasAplicables),
           proceso:          getCellStr(row,colIdx.proceso),
           correoElectronico:getCellStr(row,colIdx.correoElectronico),
+          cambioIdentidad:  nSI(getCellStr(row,colIdx.cambioIdentidad)),
+          cambioCargos:     nSI(getCellStr(row,colIdx.cambioCargos)),
+          cambioMultiSociedad: nSI(getCellStr(row,colIdx.cambioMultiSociedad)),
           historial:[], flujo:null
         });
       }
@@ -12979,7 +13050,7 @@ function ecc_generarInformeVerif(){
       window._dhPendiente=true;
       saveArr('insp',inspecciones);
       // Disparar guardado inmediato al Excel de OneDrive
-      if(OD.fileHandle&&OD.syncActivo){
+      if(OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
         if(OD.saveTimer) clearTimeout(OD.saveTimer);
         OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
       }
@@ -15882,10 +15953,10 @@ var FORMATOS_OFICIALES_DEFAULT = {
     listado: { cod:'LM-0019', ver:'00' }
   },
   'Crynssen Pharma S.A.S.': {
-    extvig:  { cod:'F-SOP-0001-CRY-4', ver:'03' },
-    acta:    { cod:'F-SOP-0001-CRY-3', ver:'04' },
-    novedad: { cod:'F-SOP-0001-CRY-2', ver:'03' },
-    listado: { cod:'F-SOP-0001-CRY-1', ver:'00' }
+    extvig:  { cod:'F-SOP-0001-3', ver:'01' },
+    acta:    { cod:'F-SOP-0001-4', ver:'01' },
+    novedad: { cod:'F-SOP-0001-5', ver:'01' },
+    listado: { cod:'LM-0019', ver:'00' }
   },
   'Diabetrics Healthcare S.A.S.': {
     extvig:  { cod:'F-SOP-0001-3', ver:'01' },
@@ -15894,10 +15965,10 @@ var FORMATOS_OFICIALES_DEFAULT = {
     listado: { cod:'LM-0019', ver:'00' }
   },
   'Pharmayect S.A.': {
-    extvig:  { cod:'F-SOP-0002 PHA-12', ver:'02' },
-    acta:    { cod:'F-SOP-0002 PHA-2', ver:'02' },
-    novedad: { cod:'F-SOP-0002-PHA-1', ver:'02' },
-    listado: { cod:'F-SOP-0002 PHA-5', ver:'00' }
+    extvig:  { cod:'F-SOP-0001-3', ver:'01' },
+    acta:    { cod:'F-SOP-0001-4', ver:'01' },
+    novedad: { cod:'F-SOP-0001-5', ver:'01' },
+    listado: { cod:'LM-0019', ver:'00' }
   },
   'Funtrition S.A.S': {
     extvig:  { cod:'F-SOP-0001-3', ver:'01' },
@@ -16189,6 +16260,18 @@ function getLeyendaPropiedadIdioma(idioma){ // idioma: 'es' | 'pt' | 'en'
 // ============================================================
 
 var currentUser=null;
+
+// ============================================================
+// AUTOGUARDADO A ONEDRIVE — SOLO PARA EL USUARIO ADMINISTRADOR
+// ============================================================
+// La app puede ser usada por varias personas, pero solo el Administrador
+// debe escribir el archivo compartido del Listado Maestro en OneDrive; el
+// resto de usuarios pueden ver y trabajar sobre su copia local sin disparar
+// escrituras automáticas hacia el archivo compartido (evita conflictos y
+// escrituras concurrentes de gente que no debe modificar el maestro).
+function _odAutosaveHabilitado(){
+  return !!(currentUser && String(currentUser.rol||'').trim()==='Administrador');
+}
 var MODULOS_TODOS=['dash','docs','venc','flujos','copias','entregacc','docsrel','insp','procs','usrs','notif','audit','rep','cfg','extvigor','marobs','fextvig','pdfbarcode','revdoc','validacion'];
 
 
@@ -16872,7 +16955,7 @@ var OD = {
     'Extension De Vigencia','Estado','Obsoleto','Administrador',
     'Lider De Proceso','Correo Electrónico','Alcance A Empresas','Áreas Aplicables','Idioma',
     'Doc.Gxp','Documentos Relacionados','Mbr','Tipo De Plantilla','Doc.Intercompañia',
-    'Motivo Obsolescencia'
+    'Motivo Obsolescencia','Cambio Identidad Corporativa','Cambio Cargos','Aplica Multi-Sociedad'
   ],
   COLUMNAS_CLAVE: [
     'codigoActual','codigoAntiguo','descripcion','descriptionEn','descriptionPt','version',
@@ -16880,7 +16963,7 @@ var OD = {
     'extensionVigencia','estado','obsoleto','administrador',
     'liderProceso','correoElectronico','alcanceEmpresas','areasAplicables','idioma',
     'docGxP','docsRelacionados','mbr','tipoPlantilla','docIntercompania',
-    'motivoObsolescencia'
+    'motivoObsolescencia','cambioIdentidad','cambioCargos','cambioMultiSociedad'
   ]
 };
 
@@ -18227,7 +18310,7 @@ function odHookSaveInsp(){
     prevSaveArr(k,v);
     // Trigger OD sync for inspecciones AND any other data array
     var SYNC_KEYS=['insp','inspProg','sol','c','p','u','nh'];
-    if(SYNC_KEYS.indexOf(k)>=0&&OD.fileHandle&&OD.syncActivo){
+    if(SYNC_KEYS.indexOf(k)>=0&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
       if(OD.saveTimer) clearTimeout(OD.saveTimer);
       OD.saveTimer=setTimeout(function(){ odGuardarListado(true); },60000);
     }
@@ -18243,7 +18326,7 @@ function odHookSaveArr(){
     _saveArrOD(k,v);
     // Trigger sync para copias, solicitudes, procesos, usuarios, notificaciones
     var OD_SYNC_KEYS=['c','sol','p','u','nh','insp','inspProg'];
-    if(OD_SYNC_KEYS.indexOf(k)>=0&&OD.fileHandle&&OD.syncActivo){
+    if(OD_SYNC_KEYS.indexOf(k)>=0&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
       if(OD.saveTimer) clearTimeout(OD.saveTimer);
       OD.saveTimer=setTimeout(function(){ odGuardarListado(true); },60000);
     }
@@ -18437,7 +18520,10 @@ async function odCargarListado(){
       'Correo Electronico':'correoElectronico','Email':'correoElectronico','E-mail':'correoElectronico',
       'Historial_Cambios':'_historialTexto',
       'Motivo Obsolescencia':'motivoObsolescencia','Motivo De Obsolescencia':'motivoObsolescencia',
-      'Categoría Obsolescencia':'motivoObsolescencia','Categoria Obsolescencia':'motivoObsolescencia'
+      'Categoría Obsolescencia':'motivoObsolescencia','Categoria Obsolescencia':'motivoObsolescencia',
+      'Cambio Identidad Corporativa':'cambioIdentidad','Cambio de Identidad Corporativa':'cambioIdentidad',
+      'Cambio Cargos':'cambioCargos','Cambio de Cargos':'cambioCargos',
+      'Aplica Multi-Sociedad':'cambioMultiSociedad','Aplica Multi Sociedad':'cambioMultiSociedad'
     };
 
     var hdrs=rows[hdrIdx].map(function(h){return String(h||'').trim();});
@@ -18494,6 +18580,16 @@ async function odCargarListado(){
     });
 
     nuevoDocs.forEach(function(d){var esObs=String(d.obsoleto||'').toUpperCase().trim()==='X'||String(d.obsoleto||'').toUpperCase().trim()==='SI'||String(d.obsoleto||'').toUpperCase().trim()==='SÍ'||d.estado==='Obsoleto';d.estado=esObs?'Obsoleto':calcEst(d.fechaVencimiento,esObs?'X':'No');if(esObs&&d.obsoleto!=='Si')d.obsoleto='Si';else if(!esObs&&(!d.obsoleto||d.obsoleto==='No'||d.obsoleto===''))d.obsoleto='No';});
+    // Normalizar los 3 checks de seguimiento de cambios (aceptar X/SI/SÍ/YES/1/S/TRUE
+    // como "marcado", igual que otros campos tipo check del sistema)
+    (function(){
+      function _esSI(v){var u=String(v||'').toUpperCase().trim();return(u==='X'||u==='SI'||u==='SÍ'||u==='YES'||u==='1'||u==='S'||u==='TRUE')?'SI':'';}
+      nuevoDocs.forEach(function(d){
+        d.cambioIdentidad=_esSI(d.cambioIdentidad);
+        d.cambioCargos=_esSI(d.cambioCargos);
+        d.cambioMultiSociedad=_esSI(d.cambioMultiSociedad);
+      });
+    })();
 
     odSetProgreso(80,'Cargando usuarios...');
 
@@ -19505,7 +19601,7 @@ function odHookSaveDocs(){
   _saveDocsOD=saveDocs;
   saveDocs=function(arr){
     _saveDocsOD(arr);
-    if(OD.fileHandle&&OD.syncActivo){
+    if(OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
       if(typeof odSaveBtnEstado==='function') odSaveBtnEstado('pendiente');
       if(OD.saveTimer) clearTimeout(OD.saveTimer);
       OD.saveTimer=setTimeout(function(){ odGuardarListado(true); },60000);
@@ -19517,7 +19613,7 @@ function odHookSaveDocs(){
 function odIniciarSyncAuto(){
   if(OD.syncTimer) clearInterval(OD.syncTimer);
   OD.syncTimer=setInterval(function(){
-    if(OD.fileHandle&&OD.syncActivo&&window.currentUser&&!_odGuardandoAhora) odGuardarListado(true);
+    if(OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()&&window.currentUser&&!_odGuardandoAhora) odGuardarListado(true);
   },OD.SYNC_INTERVAL);
 
   // Revisar vencimientos cada hora — detecta cuando un doc llega a 0 días durante la sesión
@@ -23159,7 +23255,7 @@ function rbEditarGuardar(){
   logA(currentUser?currentUser.nombre:'Admin','Edición de Solicitud',
     'Solicitud #'+consecutivo+' editada | Justificación: '+justif+' | Cambios: '+logDetalle,
     '','Ruta de Borrador');
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer)clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
   }
@@ -23208,7 +23304,7 @@ function rbAnularConfirmar(){
   if(typeof rbRecalcCache==='function') rbRecalcCache();
   logA(currentUser?currentUser.nombre:'Admin','Anulación de Solicitud',
     'Solicitud '+desc+' anulada | Motivo: '+motivo,'','Ruta de Borrador');
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer) clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
   }
@@ -23230,7 +23326,7 @@ function rbAprobar(consecutivo){
     'Ruta de Borrador');
   toast('Solicitud #'+consecutivo+' marcada como En proceso de firma','ok');
   rbRender();
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){if(OD.saveTimer)clearTimeout(OD.saveTimer);OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);}
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){if(OD.saveTimer)clearTimeout(OD.saveTimer);OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);}
 }
 
 function rbRetirarPorVencimiento(consecutivo){
@@ -23256,7 +23352,7 @@ function rbRetirarPorVencimiento(consecutivo){
     'Ruta de Borrador');
   toast('⌛ Solicitud #'+consecutivo+' marcada como Retirada por vencimiento','ok');
   rbRender();
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer)clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
   }
@@ -23278,7 +23374,7 @@ function rbRevertirARevision(consecutivo){
     'Ruta de Borrador');
   toast('↩ Solicitud #'+consecutivo+' revertida a En revisión','ok');
   rbRender();
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer)clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
   }
@@ -23721,7 +23817,7 @@ function rbActualizarOficializacion(codigo){
     'Ruta de Borrador');
   toast('✅ Solicitud '+s.consecutivo+' actualizada a Oficializado en Ruta de Borrador','ok');
   // Guardar en Excel si hay conexión
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer) clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
   }
@@ -23926,7 +24022,7 @@ function rbFechaDocConfirmar(){
     cod+' — '+actualizados+' solicitud(es) marcada(s) como '+estadoNuevo+' el '+fecha);
   toast((esAnular?'🚫':'✅')+' '+actualizados+' solicitud(es) de "'+cod.toLowerCase()+'" marcada(s) como '+estadoNuevo,'ok');
   // Guardar en Excel
-  if(window.OD&&OD.fileHandle&&OD.syncActivo){
+  if(window.OD&&OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
     if(OD.saveTimer) clearTimeout(OD.saveTimer);
     OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
   }
@@ -24088,6 +24184,39 @@ document.addEventListener('DOMContentLoaded',function(){
     if(el) el.addEventListener('input',rlVerificarListo);
   });
 });
+
+// ============================================================
+// FORZAR GUARDADO PENDIENTE AL SALIR / CAMBIAR DE PESTAÑA
+// ============================================================
+// saveDocs() y otras funciones agendan la escritura real al Excel de
+// OneDrive con un retraso (debounce) de hasta 60s para no saturar con
+// guardados constantes. Si el usuario cierra la pestaña, cambia de
+// ventana o navega fuera de la app antes de que se cumpla ese plazo,
+// el cambio (p. ej. marcar "Cambio de Identidad/Cargos" en Documentos)
+// se pierde para el Listado Maestro real, aunque haya quedado guardado
+// localmente en el navegador. Esto fuerza ese guardado pendiente de
+// inmediato en cuanto detecta que el usuario se está yendo — en
+// silencio, sin interrumpir ni preguntar nada (solo aplica al usuario
+// Administrador, el único que escribe en el Excel compartido).
+function _flushGuardadoPendiente(){
+  try{
+    if(window.OD && OD.saveTimer && OD.fileHandle && OD.syncActivo && _odAutosaveHabilitado()){
+      clearTimeout(OD.saveTimer);
+      OD.saveTimer=null;
+      if(typeof odGuardarListado==='function') odGuardarListado(true);
+    }
+  }catch(e){ console.log('flush guardado pendiente error: '+e.message); }
+}
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState==='hidden') _flushGuardadoPendiente();
+});
+window.addEventListener('pagehide', _flushGuardadoPendiente);
+// Nota: deliberadamente NO se usa beforeunload con e.preventDefault()/
+// returnValue — eso muestra el cuadro nativo "¿Salir del sitio? Los
+// cambios no se guardarán" y detiene/interrumpe al usuario en cada
+// intento de cerrar o navegar. El guardado ya se dispara arriba (en
+// visibilitychange/pagehide) de forma silenciosa, sin bloquear nada.
+window.addEventListener('beforeunload', _flushGuardadoPendiente);
 
 function rlParsearParrafosConPagina(xmlStr){
   // Parser estructural que respeta tablas:
@@ -25357,7 +25486,7 @@ function ecc_registrarHallazgos(area, subsInspeccionar, tipoInsp, inspector){
     inspExist.totalHallazgosExcel=inspExist.hallazgos.length;
     window._dhPendiente=true;
     saveArr('insp',inspecciones);
-    if(OD.fileHandle&&OD.syncActivo){
+    if(OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()){
       if(OD.saveTimer) clearTimeout(OD.saveTimer);
       OD.saveTimer=setTimeout(function(){odGuardarListado(true);},60000);
     }
@@ -25712,7 +25841,7 @@ function ecc_generarInformeGlobal(){
   saveArr('insp',inspecciones);
   console.log('[InfGlobal] area='+area+' mes='+mesActualGlob+' hallazgos='+todosHallazgos.length);
   // Guardar inmediatamente en SharePoint (no con delay)
-  if(OD.fileHandle&&OD.syncActivo&&window.currentUser){
+  if(OD.fileHandle&&OD.syncActivo&&_odAutosaveHabilitado()&&window.currentUser){
     odGuardarListado(false); // false = no silencioso, mostrar confirmación
   } else if(OD.fileHandle&&!OD.syncActivo){
     // Intentar activar sync y guardar
