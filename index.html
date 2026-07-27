@@ -6313,6 +6313,16 @@ function _saveDocOriginal() {
       // Preservar el estado existente al editar; no recalcular
 
       data.estado = old.estado;
+
+      // Si el documento tenía una Extensión de Vigencia activa, y se está
+      // actualizando por esta vía normal de edición (distinta a "Marcar
+      // Obsoleto" o a "Extender Vigencia", que son funciones aparte y ya
+      // gestionan este campo por su cuenta), la extensión ya no aplica:
+      // el documento se está actualizando/oficializando, así que se quita
+      // la marca de extensión de vigencia si la tenía.
+      if(data.estado!=='Obsoleto' && old.extensionVigencia && old.extensionVigencia.trim()!==''){
+        data.extensionVigencia='';
+      }
       var versionCambio = old.version !== data.version;
       var estadoCambio  = false;
 
