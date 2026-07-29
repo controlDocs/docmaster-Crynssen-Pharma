@@ -3655,7 +3655,147 @@ var PR={dash:renderDash,kpi:function(){renderKPI();renderKpiHallazgos();},docs:f
 
 var _navPgNodes=null,_navNiNodes=null;
 function _navGetNodes(){if(!_navPgNodes)_navPgNodes=Array.from(document.querySelectorAll('.pg'));if(!_navNiNodes)_navNiNodes=Array.from(document.querySelectorAll('.ni'));}
+// ============================================================
+// BLOQUEO DE MÓDULOS ENTRE USUARIOS (uso exclusivo)
+// ============================================================
+// La app no tiene servidor: para coordinar entre navegadores de distintos
+// usuarios se usa un archivo pequeño y liviano ("BloqueosModulos.json") en
+// la MISMA carpeta compartida de OneDrive/SharePoint del Listado Maestro
+// (no se reescribe el Excel grande para esto). Cada módulo "editable" queda
+// marcado con quién lo tiene abierto y un "latido" que se refresca cada
+// cierto tiempo; si el latido se vence (mismo tiempo que el cierre de
+// sesión por inactividad), el bloqueo se considera abandonado y se libera
+// automáticamente para que otro usuario pueda entrar.
+var LOCKABLE_MODULES = ['docs','copias','entregacc','insp','usrs','cfg','extvigor','marobs','fextvig','rutabor','novedad','correos'];
+var _miSesionId = 'ses_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+var _moduloConBloqueoActual = null;
+var _lockHeartbeatTimer = null;
+
+function _lockTimeoutMs(){
+  return Math.max(1,(_inactividadMinutos||5))*60*1000;
+}
+async function _lockLeer(){
+  try{
+    if(OD && OD.carpetaHandle){
+      var fh=await OD.carpetaHandle.getFileHandle(OD_ARCHIVOS.bloqueos,{create:false});
+      var file=await fh.getFile();
+      var txt=await file.text();
+      return txt ? JSON.parse(txt) : {};
+    }
+    if(SP && SP.activo){
+      var r=await spLeerArchivoTexto(OD_ARCHIVOS.bloqueos);
+      return r ? JSON.parse(r) : {};
+    }
+  }catch(e){ /* archivo aún no existe u otro error de lectura — se trata como "sin bloqueos" */ }
+  return {};
+}
+async function _lockEscribir(obj){
+  try{
+    var txt=JSON.stringify(obj);
+    if(OD && OD.carpetaHandle){
+      var fh=await OD.carpetaHandle.getFileHandle(OD_ARCHIVOS.bloqueos,{create:true});
+      var w=await fh.createWritable({keepExistingData:false});
+      await w.write(txt); await w.close();
+      return true;
+    }
+    if(SP && SP.activo){
+      return await spEscribirArchivoTexto(OD_ARCHIVOS.bloqueos, txt, 'application/json');
+    }
+  }catch(e){ console.warn('[LOCK] Error escribiendo bloqueos:',e.message); }
+  return false;
+}
+// Intenta tomar el bloqueo de un módulo. Devuelve true si se puede entrar.
+async function _lockIntentarEntrar(modulo){
+  if(LOCKABLE_MODULES.indexOf(modulo)<0) return true; // módulo no requiere bloqueo
+  if(!(OD&&OD.carpetaHandle) && !(SP&&SP.activo)) return true; // sin carpeta compartida, no se puede coordinar
+
+  var locks=await _lockLeer();
+  var actual=locks[modulo];
+  var ahora=Date.now();
+  if(actual && actual.sesion!==_miSesionId){
+    var edad=ahora-(new Date(actual.latido||actual.inicio).getTime()||0);
+    if(edad < _lockTimeoutMs()){
+      var mismoUsuario = currentUser && actual.usuario===currentUser.nombre;
+      _mostrarModuloBloqueado(modulo, actual, mismoUsuario);
+      return false; // bloqueado por otro usuario (o por ti mismo en otra pestaña)
+    }
+    // Bloqueo vencido/abandonado — se libera y se continúa
+  }
+  locks[modulo]={
+    usuario: currentUser?currentUser.nombre:'Usuario',
+    sesion: _miSesionId,
+    inicio: (actual&&actual.sesion===_miSesionId)?actual.inicio:new Date().toISOString(),
+    latido: new Date().toISOString()
+  };
+  await _lockEscribir(locks);
+  return true;
+}
+async function _lockLiberar(modulo){
+  if(!modulo || LOCKABLE_MODULES.indexOf(modulo)<0) return;
+  if(!(OD&&OD.carpetaHandle) && !(SP&&SP.activo)) return;
+  try{
+    var locks=await _lockLeer();
+    if(locks[modulo] && locks[modulo].sesion===_miSesionId){
+      delete locks[modulo];
+      await _lockEscribir(locks);
+    }
+  }catch(e){}
+}
+function _lockIniciarLatido(modulo){
+  _lockDetenerLatido();
+  _lockHeartbeatTimer=setInterval(function(){
+    if(_moduloConBloqueoActual!==modulo) return;
+    _lockLeer().then(function(locks){
+      locks[modulo]=locks[modulo]||{};
+      locks[modulo].usuario=currentUser?currentUser.nombre:'Usuario';
+      locks[modulo].sesion=_miSesionId;
+      locks[modulo].inicio=locks[modulo].inicio||new Date().toISOString();
+      locks[modulo].latido=new Date().toISOString();
+      _lockEscribir(locks);
+    });
+  }, Math.max(20000, _lockTimeoutMs()/4));
+}
+function _lockDetenerLatido(){
+  if(_lockHeartbeatTimer){ clearInterval(_lockHeartbeatTimer); _lockHeartbeatTimer=null; }
+}
+function _mostrarModuloBloqueado(modulo, actual, mismoUsuario){
+  var nombreMod = (typeof PT!=='undefined' && PT[modulo]) ? PT[modulo] : modulo;
+  var mins = Math.max(0, Math.round((Date.now()-(new Date(actual.latido||actual.inicio).getTime()||Date.now()))/60000));
+  var msg = mismoUsuario
+    ? '🔒 Ya tienes el módulo "'+nombreMod+'" abierto en otra pestaña o ventana.'
+    : '🔒 El módulo "'+nombreMod+'" está siendo usado por '+(actual.usuario||'otro usuario')+' en este momento. Intenta de nuevo en unos minutos.';
+  toast(msg, 'er');
+}
+// Libera el bloqueo del módulo actual al salir/cerrar (best-effort, en silencio)
+function _lockLiberarModuloActual(){
+  if(_moduloConBloqueoActual){
+    _lockDetenerLatido();
+    _lockLiberar(_moduloConBloqueoActual);
+    _moduloConBloqueoActual=null;
+  }
+}
+
 function nav(p,el){
+  // Si el módulo destino requiere uso exclusivo y hay carpeta compartida
+  // conectada, se valida el bloqueo ANTES de navegar (asíncrono); mientras
+  // tanto la app se queda en la pantalla actual.
+  if(LOCKABLE_MODULES.indexOf(p)>=0 && ((OD&&OD.carpetaHandle)||(SP&&SP.activo)) && p!==_moduloConBloqueoActual){
+    _lockIntentarEntrar(p).then(function(ok){
+      if(!ok) return;
+      if(_moduloConBloqueoActual && _moduloConBloqueoActual!==p) _lockLiberarModuloActual();
+      _moduloConBloqueoActual=p;
+      _lockIniciarLatido(p);
+      _navReal(p,el);
+    });
+    return;
+  }
+  // Módulo destino no requiere bloqueo (o ya lo tenemos nosotros): si veníamos
+  // de un módulo bloqueado distinto, lo liberamos al salir de él.
+  if(_moduloConBloqueoActual && _moduloConBloqueoActual!==p) _lockLiberarModuloActual();
+  _navReal(p,el);
+}
+
+function _navReal(p,el){
   _navGetNodes();
   _navPgNodes.forEach(function(x){x.classList.remove('act');x.style.display='none';x.style.minHeight='';x.style.width='';x.style.position='';x.style.top='';x.style.left='';x.style.right='';x.style.bottom='';x.style.zIndex='';});
   _navNiNodes.forEach(function(x){x.classList.remove('act');});
@@ -6006,7 +6146,7 @@ var TMAP = [
   {p:'F-',t:'Formato'},{p:'DA-',t:'Documento Asociado'},{p:'POL-',t:'Politica'},
   {p:'NI-',t:'Norma Interna'},{p:'SUB-',t:'Subproceso'},{p:'DP-',t:'Descripcion De Procesos'},
   {p:'MAN-',t:'Manual'},{p:'PRO-',t:'Protocolo'},{p:'PLA',t:'Planos'},
-  {p:'CR-',t:'Cronograma'},{p:'MTZ',t:'Matriz'},{p:'MP-',t:'Mapa De Procesos'},{p:'LM-',t:'Listado'}
+  {p:'CR-',t:'Cronograma'},{p:'CRG-',t:'Cronograma'},{p:'MTZ',t:'Matriz'},{p:'AMF-',t:'Análisis Modal de Fallas'},{p:'MP-',t:'Mapa De Procesos'},{p:'LM-',t:'Listado'}
 ];
 var TR = {procedimiento:'Procedure',instructivo:'Instructional',formato:'Format',politica:'Policy',manual:'Manual',registro:'Record',plan:'Plan',protocolo:'Protocol',programa:'Program',norma:'Standard',subproceso:'Subprocess',descripcion:'Description',de:'Of',del:'Of The',la:'The',los:'The',las:'The',el:'The',en:'In',para:'For',y:'And',con:'With',gestion:'Management',calidad:'Quality',produccion:'Production',logistica:'Logistics',proceso:'Process',sistema:'System',documentacion:'Documentation',mejora:'Improvement',control:'Control',seguridad:'Safety',recursos:'Resources',humanos:'Human',compras:'Purchasing',almacen:'Warehouse',planta:'Plant',fabricacion:'Manufacturing',analisis:'Analysis',revision:'Review',evaluacion:'Evaluation',administracion:'Administration',mantenimiento:'Maintenance',calibracion:'Calibration',validacion:'Validation',caracterizacion:'Characterization',cumplimiento:'Compliance'};
 
@@ -14882,6 +15022,69 @@ function revdoc_normalizarTexto(str){
 
 
 
+// ============================================================
+// SUFIJOS/DENOMINACIONES DE EMPRESA EN CÓDIGOS DE DOCUMENTO
+// ============================================================
+// Cada empresa del grupo puede tener códigos con un sufijo propio al final
+// (ej. INST-1078-CRY, SOP-0604-PHA). Procaps S.A. es la única sin sufijo
+// (código "desnudo", sin denominación). Esta lista se usa tanto para
+// RECONOCER el código completo (incluyendo el sufijo) al leer el
+// encabezado de un documento en Revisión de Documentos, como para
+// intentar variantes de búsqueda contra el Listado Maestro.
+var SUFIJOS_EMPRESA_TODAS = 'COR|CIP|CRY|DIA|PHA|FTN|PRS|BIK|CDN|CDG|PHP|PHD|PHC|UNP|ROD|CBR|HOR|PHS|SPH|FTU|RYM|COM|PRB';
+// El separador entre el número del código y la denominación de empresa
+// varía según la empresa: unas usan guion ("INST-0007-CRY", Crynssen) y
+// otras usan espacio ("INST-0007 PHA", Pharmayect) — se acepta cualquiera
+// de los dos en la lectura, y siempre se normaliza a guion en el resultado.
+var _reSepSufijoEmpresa = new RegExp('[\\s-]*('+SUFIJOS_EMPRESA_TODAS+')(?![A-Za-z])','i');
+// Segunda pasada: limpia el separador entre el sufijo y el subnúmero final de
+// un Formato (ej. "PHA- 1", "PHA 1" o "PHA1" pegado → siempre "PHA-1").
+var _reSufSubnum = new RegExp('('+SUFIJOS_EMPRESA_TODAS+')[\\s-]*(\\d{1,3})$','i');
+function _normalizarCodigoSufijo(cod){
+  if(!cod) return cod;
+  var out=cod.toUpperCase().trim().replace(_reSepSufijoEmpresa,'-$1').replace(/--+/g,'-');
+  out=out.replace(_reSufSubnum,'$1-$2');
+  return out;
+}
+// Mapa sufijo → razón social completa de la empresa. Procaps S.A. es la
+// única sin sufijo (código "desnudo"), por eso es el valor por defecto
+// cuando el código no trae ninguna denominación reconocida.
+var EMPRESA_POR_SUFIJO = {
+  COR:'Sofgen Pharma S.A. (Holding)',
+  CIP:'CI Procaps S.A.',
+  CRY:'Crynssen Pharma S.A.S.',
+  DIA:'Diabetrics Healthcare S.A.S.',
+  PHA:'Pharmayect S.A.',
+  FTN:'Funtrition S.A.S',
+  PRS:'Procaps S.A. de C.V. (antes Laboratorios López S.A de C.V)',
+  BIK:'Biokemical S.A. de C.V.',
+  CDN:'CDI S.A.',
+  CDG:'CDI S.A.',
+  PHP:'Pharmarketing S.A.',
+  PHD:'Pharmarketing Dominicana S.R.L',
+  PHC:'Pharmarketing Costa Rica S.A.',
+  UNP:'Unimed del Perú S.A.',
+  ROD:'Roddome Pharmaceutical S.A.',
+  CBR:'Colbras Industria e Comercio Ltda',
+  HOR:'Horslig GmbH',
+  PHS:'Pharminter GmbH',
+  SPH:'Sofgen Pharmaceuticals LLC',
+  FTU:'Funtrition LLC',
+  RYM:'Rymco Medical S.A.S',
+  COM:'Colombiana de Suministros Médicos Hospitalarios - Colmed Ltda.',
+  PRB:'Procaps Farmacéutica Bolivia S.A'
+};
+// Devuelve la razón social de la empresa dueña de un código de documento,
+// según el sufijo que traiga al final (ej. "INST-0007-PHA" → Pharmayect
+// S.A.). Si el código no trae ningún sufijo reconocido, se asume Procaps
+// S.A. (la única empresa del grupo con códigos "desnudos", sin denominación).
+function _empresaDelCodigo(cod){
+  if(!cod) return 'Procaps S.A.';
+  var m=new RegExp('-('+SUFIJOS_EMPRESA_TODAS+')\\b','i').exec(String(cod).toUpperCase());
+  if(m && EMPRESA_POR_SUFIJO[m[1].toUpperCase()]) return EMPRESA_POR_SUFIJO[m[1].toUpperCase()];
+  return 'Procaps S.A.';
+}
+
 function revdoc_procesarAnalisis(){
   var texto=revdoc_texto;
   var textoNorm=revdoc_normalizarTexto(texto);
@@ -14900,39 +15103,46 @@ function revdoc_procesarAnalisis(){
 
   //  Intento 1: "CÓDIGO: INST-1078" o "CÓDIGO INST-1078" (con o sin dos puntos)
   // El ":" puede faltar si el encabezado es una tabla Word con celdas separadas
-  var codFormato=/C[OÓ]D(?:IGO)?\s*:?\s*([A-Z]{2,6}-\d{3,6})/i.exec(texto);
+  // También reconoce el sufijo de empresa si está presente, con guion o espacio
+  // como separador (ej. INST-1078-CRY o INST-1078 PHA)
+  // Lista de prefijos auto-contenida (no depende de PREFIJOS_RE, que se define
+  // más abajo en el archivo y aun no tendria valor asignado en este punto).
+  var PREFIJOS_INTENTO1='SOP|INST|PRG|PLN|POL|MAN|SUB|LM|DP|DM|MP|NI|CAR|COD|DA|F|VT|USGP|ME|RG|IT|LOG|EST|CRG|CR|MTZ|AMF';
+  var codFormato=new RegExp('C[OÓ]D(?:IGO)?\\s*:?\\s*((?:(?:'+PREFIJOS_INTENTO1+')-){1,3}\\d{3,6}(?:[\\s-]*(?:'+SUFIJOS_EMPRESA_TODAS+')(?![A-Za-z]))?(?:[\\s-]*\\d{1,3})?)','i').exec(texto);
   if(codFormato){
-    codEncontrado=codFormato[1].toUpperCase().trim().replace(/--+/g,'-');
+    codEncontrado=_normalizarCodigoSufijo(codFormato[1]);
   }
 
   //  Intento 2: extraer código del nombre del archivo (muy confiable)
   // El nombre "INST-1078 V02.docx" contiene el código del documento
+  // (también reconoce sufijo de empresa con guion o espacio: "INST-1078-CRY V02.docx" o "INST-1078 PHA V02.docx")
   if(!codEncontrado && revdoc_archivo){
     var nombreArch=revdoc_archivo.name||'';
-    var PREFIJOS_ARCH='SOP|INST|PRG|PLN|POL|MAN|SUB|LM|DP|DM|MP|NI|CAR|COD|DA|VT|USGP|ME|RG|IT|LOG|EST';
-    var regNombre=new RegExp('\\b((?:(?:'+PREFIJOS_ARCH+')-){1,2}\\d{3,6})\\b','i');
+    var PREFIJOS_ARCH='SOP|INST|PRG|PLN|POL|MAN|SUB|LM|DP|DM|MP|NI|CAR|COD|DA|VT|USGP|ME|RG|IT|LOG|EST|CRG|CR|MTZ|AMF';
+    var regNombre=new RegExp('\\b((?:(?:'+PREFIJOS_ARCH+')-){1,2}\\d{3,6}(?:[\\s-]*(?:'+SUFIJOS_EMPRESA_TODAS+')(?![A-Za-z]))?(?:[\\s-]*\\d{1,3})?)','i');
     var mNombre=regNombre.exec(nombreArch.toUpperCase());
-    if(mNombre) codEncontrado=mNombre[1].toUpperCase();
+    if(mNombre) codEncontrado=_normalizarCodigoSufijo(mNombre[1]);
   }
 
   //  Intento 3: fallback — primer código en el texto (puede ser incorrecto)
   if(!codEncontrado){
     var prefijos=TMAP.map(function(t){return t.p.replace('-','\\-');}).join('|');
-    var regCodigo=new RegExp('('+prefijos+')(\\d{3,6})','i');
+    var regCodigo=new RegExp('('+prefijos+')(\\d{3,6}(?:[\\s-]*(?:'+SUFIJOS_EMPRESA_TODAS+')(?![A-Za-z]))?(?:[\\s-]*\\d{1,3})?)','i');
     var mCod=regCodigo.exec(texto);
     if(mCod){
       var prefijo=mCod[1].toUpperCase();
       if(prefijo.slice(-1)!=='-') prefijo+='-';
-      var codFallback=prefijo+mCod[2];
+      var codFallback=_normalizarCodigoSufijo(prefijo+mCod[2]);
       //  Intento 4: si el fallback difiere del nombre del archivo, preferir el nombre
       if(revdoc_archivo){
-        var PREFIJOS_ARCH2='SOP|INST|PRG|PLN|POL|MAN|SUB|LM|DP|DM|MP|NI|CAR|COD|DA|VT|USGP|ME|RG|IT|LOG|EST';
-        var regNombre2=new RegExp('\\b((?:(?:'+PREFIJOS_ARCH2+')-){1,2}\\d{3,6})\\b','i');
+        var PREFIJOS_ARCH2='SOP|INST|PRG|PLN|POL|MAN|SUB|LM|DP|DM|MP|NI|CAR|COD|DA|VT|USGP|ME|RG|IT|LOG|EST|CRG|CR|MTZ|AMF';
+        var regNombre2=new RegExp('\\b((?:(?:'+PREFIJOS_ARCH2+')-){1,2}\\d{3,6}(?:[\\s-]*(?:'+SUFIJOS_EMPRESA_TODAS+')(?![A-Za-z]))?(?:[\\s-]*\\d{1,3})?)','i');
         var mN2=regNombre2.exec((revdoc_archivo.name||'').toUpperCase());
-        if(mN2&&mN2[1]!==codFallback){
+        var codNombre2=mN2?_normalizarCodigoSufijo(mN2[1]):null;
+        if(codNombre2&&codNombre2!==codFallback){
           // El nombre del archivo indica un código diferente al del fallback
           // Preferir el del nombre (ej: archivo="INST-1078 V02.docx" pero fallback="INST-0052")
-          codEncontrado=mN2[1].toUpperCase();
+          codEncontrado=codNombre2;
         } else {
           codEncontrado=codFallback;
         }
@@ -14991,9 +15201,13 @@ function revdoc_procesarAnalisis(){
 }
 
 
-  // 3. Leyenda — debe decir "DOCUMENTO PROPIEDAD DE <empresa del usuario
-  //    logueado>" seguido del texto de prohibición de reproducción.
-  var leyendaProp = 'DOCUMENTO PROPIEDAD DE '+_rsConPunto(getRazonSocialUsuario().toUpperCase());
+  // 3. Leyenda — debe decir "DOCUMENTO PROPIEDAD DE <empresa dueña de ESTE
+  //    documento, según el sufijo de su código>" seguido del texto de
+  //    prohibición de reproducción. Ojo: es la empresa del DOCUMENTO (por su
+  //    código, ej. -CRY, -PHA), no la empresa del usuario que hace la revisión
+  //    — un Administrador puede revisar documentos de cualquier empresa.
+  var empresaDelDocumento = _empresaDelCodigo(codEncontrado || resultado.codigo);
+  var leyendaProp = 'DOCUMENTO PROPIEDAD DE '+_rsConPunto(empresaDelDocumento.toUpperCase());
   var leyendaProh = 'QUEDA ESTRICTAMENTE PROHIBIDA SU REPRODUCCIÓN, DISTRIBUCIÓN O UTILIZACIÓN TOTAL O PARCIAL SIN LA AUTORIZACIÓN PREVIA Y EXPRESA DE LA ORGANIZACIÓN';
   var leyendaPropNorm=revdoc_normalizarTexto(leyendaProp);
   var leyendaProhNorm=revdoc_normalizarTexto(leyendaProh);
@@ -15037,7 +15251,8 @@ function revdoc_procesarAnalisis(){
 // Prefijos simples conocidos (sin guión)
 var TODOS_PREFIJOS=[
   'SOP','INST','PRG','PLN','POL','MAN','SUB','LM','DP','DM','MP','NI',
-  'CAR','COD','DA','DP','F','VT','USGP','DAT','ME','RG','IT','LOG','EST'
+  'CAR','COD','DA','DP','F','VT','USGP','DAT','ME','RG','IT','LOG','EST',
+  'CRG','CR','MTZ','AMF'
 ];
 
 // Normalizar texto: mayúsculas, limpiar caracteres no útiles
@@ -15101,7 +15316,7 @@ function verificarEnMaestro(cod){
 
   // Intento 3: quitar sufijos numéricos simples al final (ej: SOP-0001-2 → SOP-0001)
   // NUNCA quitar -COR (ya está excluido arriba)
-  var SUFIJOS_EMPRESA=['PHA','FUN','CRY','CED','DIA','CORP'];
+  var SUFIJOS_EMPRESA=SUFIJOS_EMPRESA_TODAS.split('|');
   var reSuf=new RegExp('-(?:\\d{1,3}|'+SUFIJOS_EMPRESA.join('|')+')$');
   var s3=c.replace(reSuf,'');
   if(s3!==c){
@@ -15130,7 +15345,7 @@ function verificarEnMaestro(cod){
 }
 
 function agregarCodigo(comoAparece){
-  comoAparece=comoAparece.toUpperCase().replace(/--+/g,'-').replace(/\s+/g,'').trim();
+  comoAparece=_normalizarCodigoSufijo(comoAparece).replace(/\s+/g,'');
   // Validar: debe contener al menos un prefijo conocido seguido de guión
   var tienePrefijo=TODOS_PREFIJOS.some(function(p){
     return comoAparece===p+'-'||comoAparece.indexOf(p+'-')===0||comoAparece.indexOf('-'+p+'-')>=0;
@@ -15167,13 +15382,13 @@ function agregarCodigo(comoAparece){
 //
 // Patrón general: [F-|DA-|...] PREFIJO-NNNN[-COR][-N] o USGP-NNN[-NNN]
 
-var PREFIJOS_RE='SOP|INST|PRG|PLN|POL|MAN|SUB|LM|DP|DM|MP|NI|CAR|COD|DA|DP|F|VT|USGP|NI|MAN|ME|RG|IT|LOG|EST';
+var PREFIJOS_RE='SOP|INST|PRG|PLN|POL|MAN|SUB|LM|DP|DM|MP|NI|CAR|COD|DA|DP|F|VT|USGP|NI|MAN|ME|RG|IT|LOG|EST|CRG|CR|MTZ|AMF';
 
 var regPrincipal=new RegExp(
   // Patrón general: combinación de hasta 3 segmentos de letras separados por guión, luego número base,
   // luego opcionalmente -COR y/o sufijo numérico o de empresa.
   // \d{3,6}: mínimo 3 dígitos para evitar falsos positivos en años o números cortos.
-  '\\b((?:(?:'+PREFIJOS_RE+')-){1,3}\\d{3,6}(?:-(?:COR|PHA|FUN|CRY|CED|DIA|CORP))?(?:-\\d{1,3})?)\\b',
+  '\\b((?:(?:'+PREFIJOS_RE+')-){1,3}\\d{3,6}(?:[\\s-]*(?:'+SUFIJOS_EMPRESA_TODAS+')(?![A-Za-z]))?(?:[\\s-]*\\d{1,3})?)\\b',
   'g'
 );
 
@@ -15215,7 +15430,7 @@ while((mDA=regDA.exec(textoLimpio))!==null){
 // Tercera pasada: buscar códigos con sufijo de empresa al final
 // Ejemplo: SOP-0001-PHA, INST-0001-CRY
 var regEmpresa=new RegExp(
-  '\\b((?:(?:'+PREFIJOS_RE+')-){1,3}\\d{3,6}-(?:PHA|FUN|CRY|CED|DIA)(?:-\\d{1,3})?)\\b',
+  '\\b((?:(?:'+PREFIJOS_RE+')-){1,3}\\d{3,6}[\\s-]*(?:'+SUFIJOS_EMPRESA_TODAS+')(?![A-Za-z])(?:[\\s-]*\\d{1,3})?)\\b',
   'g'
 );
 regEmpresa.lastIndex=0;
@@ -16817,6 +17032,8 @@ function canDelete(){
 
 function doLogout(){
  detenerTimerInactividad();
+  // Liberar el bloqueo de uso exclusivo del módulo actual, si lo había
+  if(typeof _lockLiberarModuloActual==='function') _lockLiberarModuloActual();
   // Cancelar cualquier guardado automático pendiente
   if(window.OD && OD.saveTimer){ clearTimeout(OD.saveTimer); OD.saveTimer=null; }
   // Proteger la hoja Detalle de Hallazgos: al volver a loguear
@@ -16856,14 +17073,15 @@ function loginOnEnter(e){if(e.key==='Enter')doLogin();}
 // MÓDULO ONEDRIVE — Lectura y escritura persistente del Excel
 // Usa File System Access API + IndexedDB para recordar el archivo
 // ============================================================
-// ── NOMBRES DE ARCHIVOS DE LA CARPETA DocControl_Sofgen ───────
+// ── NOMBRES DE ARCHIVOS DE LA CARPETA COMPARTIDA (OneDrive/SharePoint) ───────
 var OD_ARCHIVOS = {
   lm:           'ListadoMaestro.xlsx',
   copias:       'CopiaControladas.xlsx',
   solicitudes:  'Solicitudes.xlsx',
   inspecciones: 'Inspecciones.xlsx',
   colaboradores:'Colaboradores.xlsx',
-  actividades:  'Actividadesdeldia.xlsx'
+  actividades:  'Actividadesdeldia.xlsx',
+  bloqueos:     'BloqueosModulos.json'
 };
 
 // ── MODO SHAREPOINT ───────────────────────────────────────────────────────────
@@ -16969,9 +17187,44 @@ async function spEscribirArchivo(nombre, wbToWrite){
   }
 }
 
+// Variante genérica para archivos de texto/JSON pequeños (no Excel), como el
+// archivo de bloqueos de módulos entre usuarios.
+async function spLeerArchivoTexto(nombre){
+  var url=SP.carpetaUrl+'/'+nombre;
+  try{
+    var r=await fetch(url,{credentials:'include',cache:'no-cache'});
+    if(!r.ok) throw new Error('HTTP '+r.status+' al leer '+nombre);
+    return await r.text();
+  }catch(e){
+    return null; // archivo aún no existe u otro error — se trata como vacío
+  }
+}
+async function spEscribirArchivoTexto(nombre, texto, mime){
+  try{
+    var blob=new Blob([texto],{type:mime||'text/plain'});
+    var digest=await spObtenerDigest();
+    var serverRelUrl=SP.carpetaUrl+'/'+nombre;
+    var apiUrl=SP.siteUrl+"/_api/web/getfilebyserverrelativeurl('"+encodeURIComponent(serverRelUrl)+"')/$value";
+    var headers={'Content-Type':mime||'text/plain','Content-Length':String(blob.size)};
+    if(digest) headers['X-RequestDigest']=digest;
+    var r=await fetch(apiUrl,{method:'PUT',credentials:'include',headers:headers,body:blob});
+    if(!r.ok){
+      var apiUrl2=SP.siteUrl+"/_api/web/getfolderbyserverrelativeurl('"+encodeURIComponent(SP.carpetaUrl)+"')"+
+                  "/files/add(url='"+encodeURIComponent(nombre)+"',overwrite=true)";
+      if(digest) headers['X-RequestDigest']=digest;
+      var r2=await fetch(apiUrl2,{method:'POST',credentials:'include',headers:headers,body:blob});
+      if(!r2.ok) throw new Error('HTTP '+r2.status+' al escribir '+nombre);
+    }
+    return true;
+  }catch(e){
+    console.warn('[SP] Error escribiendo '+nombre+':',e.message);
+    return false;
+  }
+}
+
 var OD = {
   fileHandle:    null,   // archivo principal (ListadoMaestro.xlsx) — retro-compat
-  carpetaHandle: null,   // handle de la carpeta DocControl_Sofgen
+  carpetaHandle: null,   // handle de la carpeta compartida con los archivos Excel
   handles: {
     lm: null, copias: null, solicitudes: null,
     inspecciones: null, colaboradores: null, actividades: null
@@ -18455,7 +18708,7 @@ async function odCargarListado(){
   window._odCargando=true;
   var _odCargandoRelease=function(){ window._odCargando=false; };
   if(!SP.activo&&!OD.carpetaHandle&&!OD.fileHandle){
-    toast('Selecciona la carpeta DocControl_Sofgen primero','er');
+    toast('Selecciona primero la carpeta donde están tus archivos Excel','er');
     if(!document.getElementById('od-seleccion-screen')) odMostrarSeleccion();
     _odCargandoRelease();
     return;
@@ -19853,7 +20106,7 @@ function odMostrarReconectarSinHandle(nombreCarpeta){
       var tieneExcel=false;
       try{ await dirHandle.getFileHandle(OD_ARCHIVOS.lm,{create:false}); tieneExcel=true; }catch(e){}
       if(!tieneExcel){
-        toast('La carpeta seleccionada no tiene los archivos Excel. Selecciona DocControl_Sofgen.','er');
+        toast('La carpeta seleccionada no tiene los archivos Excel. Verifica que sea la carpeta correcta.','er');
         btn.textContent='&#9654; Abrir '+nombreCarpeta; btn.disabled=false;
         return;
       }
@@ -20008,20 +20261,19 @@ function odMostrarSeleccion(avisoMsg){
         +'<div style="font-size:12px;font-weight:700;color:#006860;margin-bottom:8px">📁 ¿Cómo seleccionar la carpeta?</div>'
         +'<div style="font-size:11px;color:#336666;line-height:1.8">'
           +'1. Haz clic en el botón de abajo<br>'
-          +'2. En el explorador, navega hasta la carpeta <strong>DocControl_Sofgen</strong><br>'
-          +'   (la que contiene los archivos Excel)<br>'
+          +'2. En el explorador, navega hasta la carpeta <strong>donde están tus archivos Excel</strong> compartidos<br>'
           +'3. Selecciona esa carpeta y confirma<br>'
           +'4. La app la recordará para las próximas sesiones'
         +'</div>'
         +'<div style="margin-top:10px;background:#e8f0f0;border-radius:6px;padding:7px 10px;font-size:10px;font-family:monospace;color:#0a4a4a;border-left:3px solid #006860">'
-          +'DocControl_Sofgen/<br>'
+          +'📁 (tu carpeta compartida)/<br>'
           +'&nbsp;&nbsp;├─ ListadoMaestro.xlsx<br>'
           +'&nbsp;&nbsp;├─ CopiaControladas.xlsx<br>'
           +'&nbsp;&nbsp;├─ Solicitudes.xlsx<br>'
           +'&nbsp;&nbsp;└─ ...'
         +'</div>'
       +'</div>'
-      +'<button id="od-btn-seleccion" onclick="odSeleccionarDesdeSeleccion()" style="width:100%;padding:14px;background:#00A99E;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;letter-spacing:.3px">📁 Seleccionar carpeta DocControl_Sofgen</button>'
+      +'<button id="od-btn-seleccion" onclick="odSeleccionarDesdeSeleccion()" style="width:100%;padding:14px;background:#00A99E;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;letter-spacing:.3px">📁 Seleccionar carpeta de archivos</button>'
       +'<div style="margin-top:10px;font-size:10px;color:#5e9090">Solo debes hacerlo <strong>una vez</strong> por equipo — la app lo recordará automáticamente</div>'
     +'</div>';
   document.body.appendChild(d);
@@ -20043,9 +20295,9 @@ async function odSeleccionarDesdeSeleccion(){
       catch(e){ faltantes.push(archivosObligatorios[i]); }
     }
     if(faltantes.length){
-      var msg='Faltan archivos en la carpeta:\n'+faltantes.join('\n')+'\n\nVerifica que seleccionaste la carpeta DocControl_Sofgen correcta.';
+      var msg='Faltan archivos en la carpeta:\n'+faltantes.join('\n')+'\n\nVerifica que seleccionaste la carpeta correcta (la que contiene los archivos Excel compartidos).';
       alert(msg);
-      if(btn){btn.textContent='📁 Seleccionar carpeta DocControl_Sofgen';btn.disabled=false;}
+      if(btn){btn.textContent='📁 Seleccionar carpeta de archivos';btn.disabled=false;}
       return;
     }
     OD.carpetaHandle=dirHandle;
@@ -20063,7 +20315,7 @@ async function odSeleccionarDesdeSeleccion(){
       console.error('[OD] Error en odCargarListado:',eLoad);
       odOcultarCargando();
       alert('Error al cargar datos: '+eLoad.message);
-      if(btn){btn.textContent='📁 Seleccionar carpeta DocControl_Sofgen';btn.disabled=false;}
+      if(btn){btn.textContent='📁 Seleccionar carpeta de archivos';btn.disabled=false;}
       return;
     }
     odOcultarCargando();
@@ -20072,12 +20324,12 @@ async function odSeleccionarDesdeSeleccion(){
     showLogin();
   }catch(err){
     if(err.name==='AbortError'){
-      if(btn){btn.textContent='📁 Seleccionar carpeta DocControl_Sofgen';btn.disabled=false;}
+      if(btn){btn.textContent='📁 Seleccionar carpeta de archivos';btn.disabled=false;}
       return;
     }
     odOcultarCargando();
     alert('Error al seleccionar carpeta: '+err.message);
-    if(btn){btn.textContent='📁 Seleccionar carpeta DocControl_Sofgen';btn.disabled=false;}
+    if(btn){btn.textContent='📁 Seleccionar carpeta de archivos';btn.disabled=false;}
   }
 }
 
@@ -24237,6 +24489,9 @@ function _flushGuardadoPendiente(){
       if(typeof odGuardarListado==='function') odGuardarListado(true);
     }
   }catch(e){ console.log('flush guardado pendiente error: '+e.message); }
+  // Liberar también el bloqueo de uso exclusivo del módulo actual, para que
+  // otro usuario pueda entrar sin tener que esperar a que venza el "latido".
+  try{ if(typeof _lockLiberarModuloActual==='function') _lockLiberarModuloActual(); }catch(e2){}
 }
 document.addEventListener('visibilitychange', function(){
   if(document.visibilityState==='hidden') _flushGuardadoPendiente();
