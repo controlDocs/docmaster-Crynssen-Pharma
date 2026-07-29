@@ -3688,7 +3688,28 @@ function _navGetNodes(){if(!_navPgNodes)_navPgNodes=Array.from(document.querySel
 // sesión por inactividad), el bloqueo se considera abandonado y se libera
 // automáticamente para que otro usuario pueda entrar.
 var LOCKABLE_MODULES = ['docs','copias','entregacc','insp','usrs','cfg','extvigor','marobs','fextvig','rutabor','novedad','correos'];
-var _miSesionId = 'ses_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+// _miSesionId se guarda en sessionStorage (no solo en una variable JS) para
+// que sobreviva a un refresco (F5) de la misma pestaña. Antes se generaba un
+// id nuevo en cada carga de página: si el usuario refrescaba estando dentro
+// de un módulo bloqueado, el navegador no siempre alcanza a terminar de
+// escribir la liberación del bloqueo antes de descargar la página (la
+// escritura es asíncrona, contra un archivo remoto en OneDrive/SharePoint).
+// Al recargar, el id de sesión cambiaba, así que el propio usuario quedaba
+// identificado como "otra sesión" ocupando el módulo — bloqueándose a sí
+// mismo hasta que venciera el latido, aunque en realidad nadie más lo
+// estuviera usando. Con el id persistido en sessionStorage, un refresco
+// conserva el mismo id y el sistema reconoce que sigue siendo la misma
+// sesión, renovando el bloqueo en vez de negarle la entrada.
+var _miSesionId = (function(){
+  try{
+    var k='_lockSesionId';
+    var v = sessionStorage.getItem(k);
+    if(!v){ v='ses_'+Date.now()+'_'+Math.random().toString(36).slice(2,8); sessionStorage.setItem(k,v); }
+    return v;
+  }catch(e){
+    return 'ses_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+  }
+})();
 var _moduloConBloqueoActual = null;
 var _lockHeartbeatTimer = null;
 
