@@ -2693,7 +2693,12 @@ tbody tr:last-child td{border-bottom:none}
     <div class="fp"><label class="fl rq">Version</label><input class="fi" id="d-ver" placeholder="01"></div>
     <div class="fp"><label class="fl">Tipo de Documento</label><input class="fi au" id="d-tipo" readonly placeholder="Auto segun codigo"></div>
     <div class="fp"><label class="fl">Tipo de Plantilla</label><input class="fi" id="d-tpl" placeholder="Estandar"></div>
-    <div class="fp"><label class="fl rq">Area Generadora</label><select class="fs" id="d-area" onchange="onArea()"><option value="">Selecciona</option></select></div>
+    <div class="fp">
+      <label class="fl rq">Area Generadora</label>
+      <select class="fs" id="d-area" onchange="onArea()"><option value="">Selecciona</option></select>
+      <input class="fi" id="d-area-manual" placeholder="Escribe el área nueva" style="display:none;margin-top:5px;text-transform:uppercase" oninput="onAreaManual()">
+      <div class="fh" id="d-area-manual-hint" style="display:none;color:var(--T3)">Área nueva — completa también Proceso, Administrador, Líder y Correo.</div>
+    </div>
     <div class="fp"><label class="fl">Proceso</label><input class="fi au" id="d-proc" readonly placeholder="Auto segun area"></div>
     <div class="fp"><label class="fl">Idioma</label><select class="fs" id="d-idioma"><option value="E">E - Espanol</option><option value="I">I - Ingles</option><option value="B">B - Bilingue</option></select></div>
   </div>
@@ -3465,7 +3470,7 @@ function populateFiltros(){
   fill('f-proc',LC.procs,'Todos los procesos');
   fill('f-area',LC.areas,'Todas las areas');
   var da=document.getElementById('d-area');
-  if(da){var v=da.value;da.innerHTML='<option value="">Selecciona</option>'+LC.areas.map(function(a){return'<option value="'+a+'">'+a+'</option>';}).join('');if(v)da.value=v;}
+  if(da){var v=da.value;da.innerHTML='<option value="">Selecciona</option><option value="__nueva__">➕ Área nueva (no está en el listado)</option>'+LC.areas.map(function(a){return'<option value="'+a+'">'+a+'</option>';}).join('');if(v)da.value=v;}
 }
 
 // ============================================================
@@ -6259,11 +6264,53 @@ async function docAutoTraducirDescripcion(v){
   }
 }
 function onArea() {
-  var area = document.getElementById('d-area').value;
+  var sel = document.getElementById('d-area');
+  var area = sel.value;
+  var manualInput = document.getElementById('d-area-manual');
+  var manualHint  = document.getElementById('d-area-manual-hint');
+  var camposAuto  = [
+    {id:'d-proc', ph:'Escribe el proceso'},
+    {id:'d-adm',  ph:'Escribe el administrador'},
+    {id:'d-lid',  ph:'Escribe el líder de proceso'},
+    {id:'d-cor',  ph:'Escribe el correo'}
+  ];
+
+  if (area === '__nueva__') {
+    // Área nueva: no está en el Listado Maestro — se habilita registro manual
+    if (manualInput) { manualInput.style.display='block'; manualInput.value=''; manualInput.focus(); }
+    if (manualHint)  manualHint.style.display='block';
+    camposAuto.forEach(function(c){
+      var el=document.getElementById(c.id);
+      if(!el) return;
+      el.readOnly=false;
+      el.classList.remove('au');
+      el.value='';
+      el.placeholder=c.ph;
+    });
+    return;
+  }
+
+  // Área existente en el Listado Maestro: ocultar campo manual y autocompletar (solo lectura)
+  if (manualInput) { manualInput.style.display='none'; manualInput.value=''; }
+  if (manualHint)  manualHint.style.display='none';
+  camposAuto.forEach(function(c){
+    var el=document.getElementById(c.id);
+    if(!el) return;
+    el.readOnly=true;
+    el.classList.add('au');
+  });
   document.getElementById('d-proc').value = LC.areaAProceso[area] || '';
   document.getElementById('d-lid').value  = LC.areaALider[area]   || '';
   document.getElementById('d-adm').value  = LC.areaAAdmin[area]   || '';
   document.getElementById('d-cor').value  = LC.areaACorreo[area]  || '';
+}
+// Mantiene en mayúsculas el área nueva mientras el usuario la escribe
+function onAreaManual(){
+  var el=document.getElementById('d-area-manual');
+  if(!el) return;
+  var pos=el.selectionStart;
+  el.value=el.value.toUpperCase();
+  el.setSelectionRange(pos,pos);
 }
 function calcVencByPrefix(cod, fvig, esObsoleto) {
   // Obsoletos: sin fecha de vencimiento
@@ -6355,6 +6402,17 @@ function openNewDoc() {
   document.getElementById('d-fvenc').dataset = document.getElementById('d-fvenc').dataset || {};
   document.getElementById('d-fvenc').dataset.iso = '';
   document.getElementById('d-est').value = '';
+  // Restaurar campo de área manual y bloqueo de proceso/admin/lider/correo
+  // (por si quedaron habilitados de una edición anterior de área nueva)
+  var manualInput=document.getElementById('d-area-manual');
+  if(manualInput){manualInput.style.display='none';manualInput.value='';}
+  var manualHint=document.getElementById('d-area-manual-hint');
+  if(manualHint) manualHint.style.display='none';
+  ['d-proc','d-adm','d-lid','d-cor'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el){el.readOnly=true;el.classList.add('au');el.placeholder='';}
+  });
+  document.getElementById('d-proc').placeholder='Auto segun area';
   window._docEmailCtx={accion:'nuevo', verAnterior:'', verNueva:''};
   populateFiltros();
   openMo('mo-doc');
@@ -6428,12 +6486,36 @@ function _saveDocOriginal() {
   if (!fvencISO && fvig) { fvencISO=calcVencByPrefix(cod,fvig,document.getElementById('d-obs').value); if(!fvencISO){var dt=new Date(fvig+'T12:00:00');dt.setFullYear(dt.getFullYear()+3);fvencISO=fD(dt);} }
   var obs = document.getElementById('d-obs').value;
   var ext = document.getElementById('d-ext').value;
+  // Área generadora: si se seleccionó "Área nueva", tomar el valor escrito
+  // manualmente en vez del select. Se exige texto no vacío en ese caso.
+  var areaSelVal = document.getElementById('d-area').value;
+  var areaFinal = areaSelVal;
+  if (areaSelVal === '__nueva__') {
+    areaFinal = (document.getElementById('d-area-manual').value || '').trim().toUpperCase();
+    if (!areaFinal) {
+      toast('Escribe el nombre del área nueva (no está en el Listado Maestro)', 'er');
+      var elAreaM = document.getElementById('d-area-manual');
+      if (elAreaM) { elAreaM.style.borderColor = 'var(--R)'; elAreaM.focus(); setTimeout(function(){elAreaM.style.borderColor='';}, 3000); }
+      return;
+    }
+    // Al registrar un área nueva, también deben registrarse manualmente sus
+    // responsables (no hay datos previos del Listado Maestro de dónde tomarlos)
+    var faltantes=[];
+    [['d-proc','Proceso'],['d-adm','Administrador'],['d-lid','Líder de Proceso'],['d-cor','Correo']].forEach(function(f){
+      var el=document.getElementById(f[0]);
+      if(!el||!(el.value||'').trim()) faltantes.push(f[1]);
+    });
+    if (faltantes.length) {
+      toast('Área nueva: completa también '+faltantes.join(', '), 'er');
+      return;
+    }
+  }
   var data = {
     codigoActual:cod, codigoAntiguo:document.getElementById('d-codant').value||'No Aplica',
     descripcion:desc, descriptionEn:document.getElementById('d-desen').value,
     descriptionPt:document.getElementById('d-despt')?document.getElementById('d-despt').value:'',
     version:document.getElementById('d-ver').value, tipoDocumento:document.getElementById('d-tipo').value,
-    tipoPlantilla:document.getElementById('d-tpl').value, areaGeneradora:document.getElementById('d-area').value,
+    tipoPlantilla:document.getElementById('d-tpl').value, areaGeneradora:areaFinal,
     proceso:document.getElementById('d-proc').value, idioma:document.getElementById('d-idioma').value,
     fechaVigencia:fvig, fechaVencimiento:fvencISO, extensionVigencia:ext, obsoleto:obs,
     estado:calcEst(fvencISO, obs, ext),
@@ -6616,6 +6698,34 @@ function editDoc(id) {
   window._docEmailCtx={accion:'edicion', verAnterior:d.version||'', verNueva:d.version||''};
   var map = {cod:'codigoActual',codant:'codigoAntiguo',desc:'descripcion',desen:'descriptionEn',despt:'descriptionPt',ver:'version',tipo:'tipoDocumento',tpl:'tipoPlantilla',proc:'proceso',idioma:'idioma',fvig:'fechaVigencia',ext:'extensionVigencia',obs:'obsoleto',adm:'administrador',lid:'liderProceso',cor:'correoElectronico',alc:'alcanceEmpresas',aapl:'areasAplicables',drel:'docsRelacionados'};
   for (var k in map) { var el = document.getElementById('d-'+k); if (el) el.value = d[map[k]] || ''; }
+  // Área: si el área del documento ya existe en el Listado Maestro, se
+  // selecciona normalmente y los campos quedan solo-lectura (auto). Si no
+  // existe como opción (caso raro), se activa el modo manual con el valor
+  // ya guardado, para no perder la información al editar.
+  (function(){
+    var selArea=document.getElementById('d-area');
+    var manualInput=document.getElementById('d-area-manual');
+    var manualHint=document.getElementById('d-area-manual-hint');
+    var camposManual=['d-proc','d-adm','d-lid','d-cor'];
+    if(!selArea) return;
+    selArea.value=d.areaGeneradora||'';
+    if(selArea.value===(d.areaGeneradora||'') && d.areaGeneradora){
+      // Coincidió con una opción existente del listado
+      if(manualInput){manualInput.style.display='none';manualInput.value='';}
+      if(manualHint) manualHint.style.display='none';
+      camposManual.forEach(function(id){var el=document.getElementById(id);if(el){el.readOnly=true;el.classList.add('au');}});
+    } else if(d.areaGeneradora){
+      // El área guardada no está en el listado (caso raro) — modo manual
+      selArea.value='__nueva__';
+      if(manualInput){manualInput.style.display='block';manualInput.value=d.areaGeneradora;}
+      if(manualHint) manualHint.style.display='block';
+      camposManual.forEach(function(id){var el=document.getElementById(id);if(el){el.readOnly=false;el.classList.remove('au');}});
+    } else {
+      if(manualInput){manualInput.style.display='none';manualInput.value='';}
+      if(manualHint) manualHint.style.display='none';
+      camposManual.forEach(function(id){var el=document.getElementById(id);if(el){el.readOnly=true;el.classList.add('au');}});
+    }
+  })();
   // Re-generar traduccion si no existe o forzar desde descripcion actual
   var descEl = document.getElementById('d-desc');
   var denEl  = document.getElementById('d-desen');
@@ -6651,7 +6761,6 @@ function editDoc(id) {
     });
   })();
   populateFiltros();
-  document.getElementById('d-area').value = d.areaGeneradora || '';
   // Mostrar alerta de copias controladas
   var ca = copiasEmpresa().filter(function(x){return x.codigo===d.codigoActual;});
   var copWarn = document.getElementById('d-copias-warn');
@@ -14848,6 +14957,16 @@ function revdoc_leerWord(){
             })
             // 4. Unir código partido: F-\nSOP-0001 (prefijo separado de código)
             .replace(/\b([A-Z]{1,4})-\s+([A-Z]{2,4}-\d)/g,'$1-$2')
+            // 4.1. Reparar sufijo de empresa partido en dos runs por Word
+            //      (ej: "SOP-0041-CR Y" → "SOP-0041-CRY", porque "CR" es a la
+            //      vez un prefijo válido de otro tipo de documento, y el
+            //      detector de sufijos no reconoce el corte a menos que se
+            //      reconstruya la palabra completa primero)
+            .replace(/-([A-Z]{1,3})\s+([A-Z]{1,3})\b(?!-)/g,function(m,a,b){
+              var merged=(a+b).toUpperCase();
+              var validos=['COR','CIP','CRY','DIA','PHA','FTN','PRS','BIK','CDN','CDG','PHP','PHD','PHC','UNP','ROD','CBR','HOR','PHS','SPH','FTU','RYM','COM','PRB'];
+              return validos.indexOf(merged)>=0 ? ('-'+merged) : m;
+            })
             // 5. Unir versión partida: "VERSIÓN: 2\n7" → "VERSIÓN: 27"
             .replace(/(VERSI[OÓ]N\s*:\s*\d{1,2})\s+(\d{1,2})(?=\s)/gi,'$1$2')
             // 6. Normalizar espacios múltiples
@@ -16331,6 +16450,13 @@ function guardarFormatosOficiales(){
 
 // ── Administración (pantalla Configuración) de FORMATOS_OFICIALES ──────
 function cfgFormatosRender(){
+  var card=document.getElementById('cfg-formatos-card');
+  var esAdmin = !!(currentUser && currentUser.rol==='Administrador');
+  // Este módulo (ver y editar códigos/versiones de formatos por empresa) es
+  // exclusivo del rol Administrador, sin importar los permisos personalizados
+  // que se le hayan otorgado a otros roles sobre la página "Configuración".
+  if(card) card.style.display = esAdmin ? '' : 'none';
+  if(!esAdmin) return;
   var tb=document.getElementById('cfg-formatos-tb');
   if(!tb) return;
   var empresas=Object.keys(FORMATOS_OFICIALES);
@@ -16359,6 +16485,7 @@ function cfgFormatosRender(){
 }
 
 function cfgFormatosAgregarEmpresa(){
+  if(!(currentUser && currentUser.rol==='Administrador')){ toast('Solo un Administrador puede modificar los formatos por empresa','er'); return; }
   var nombre=prompt('Nombre de la nueva empresa/sociedad:');
   if(!nombre||!nombre.trim()) return;
   nombre=nombre.trim();
@@ -16374,6 +16501,7 @@ function cfgFormatosAgregarEmpresa(){
 }
 
 function cfgFormatosEliminar(empEncoded){
+  if(!(currentUser && currentUser.rol==='Administrador')){ toast('Solo un Administrador puede modificar los formatos por empresa','er'); return; }
   var emp=decodeURIComponent(empEncoded);
   if(!confirm('¿Eliminar la configuración de formatos para "'+emp+'"?')) return;
   delete FORMATOS_OFICIALES[emp];
@@ -16383,6 +16511,7 @@ function cfgFormatosEliminar(empEncoded){
 }
 
 function cfgFormatosGuardarTodo(){
+  if(!(currentUser && currentUser.rol==='Administrador')){ toast('Solo un Administrador puede modificar los formatos por empresa','er'); return; }
   var tb=document.getElementById('cfg-formatos-tb');
   if(!tb) return;
   var nuevo={};
@@ -16415,6 +16544,7 @@ function cfgFormatosGuardarTodo(){
 }
 
 function cfgFormatosRestaurar(){
+  if(!(currentUser && currentUser.rol==='Administrador')){ toast('Solo un Administrador puede modificar los formatos por empresa','er'); return; }
   if(!confirm('¿Restaurar los valores de fábrica? Se perderán los cambios guardados en esta tabla.')) return;
   FORMATOS_OFICIALES=JSON.parse(JSON.stringify(FORMATOS_OFICIALES_DEFAULT));
   guardarFormatosOficiales();
